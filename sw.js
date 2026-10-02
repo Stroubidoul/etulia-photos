@@ -1,9 +1,9 @@
 // Etulia Photos — service worker. Coquille (page, css, js, icônes) en cache ;
 // vignettes/photos : cache après première vue (max ~400 entrées).
 // À chaque modification visible : bumper CACHE (et ?v= dans index.html / app.js).
-const CACHE = 'etulia-photos-v3';
+const CACHE = 'etulia-photos-v4';
 const IMG_CACHE = 'etulia-photos-img-v1';
-const SHELL = ['./', './index.html', './manifest.json', './css/app.css?v=3', './js/app.js?v=3', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/favicon.png'];
+const SHELL = ['./', './index.html', './manifest.json', './css/app.css?v=4', './js/app.js?v=4', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/favicon.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE && k !== IMG_CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', (e) => {

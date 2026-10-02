@@ -1,5 +1,5 @@
 // Etulia Photos — app principale (v1 : connexion, albums, album, visionneuse, partage)
-export const APP_VERSION = '3';
+export const APP_VERSION = '4';
 const SUPABASE_URL = 'https://qczdkpigbngksztjezbm.supabase.co';
 const SUPABASE_ANON = 'sb_publishable_fGScTPMheymoIscX4GIc_g_uKVZGVzV';
 
@@ -160,11 +160,13 @@ function albumMenu(a) {
     <button class="opt" id="m-copy" style="margin-top:12px">🔗 Copier le lien de l'album</button>
     ${isDir() ? `<button class="opt" id="m-edit">✎ Renommer · description · tags</button>
       ${!a.parent_id ? '<button class="opt" id="m-sub">＋ Créer un sous-album</button>' : ''}
+      <button class="opt" id="m-cover">⭐ Choisir la photo de couverture</button>
       <button class="opt danger" id="m-arch">📦 Archiver l'album <small>masqué, pas supprimé</small></button>` : ''}`,
     (box) => {
       box.querySelector('#m-copy').onclick = async () => { try { await navigator.clipboard.writeText(location.origin + location.pathname + '#/album/' + a.id); toast('Lien copié'); } catch (_) { toast('Copie impossible', true); } closeSheet(); };
       const ed = box.querySelector('#m-edit'); if (ed) ed.onclick = () => albumForm(a, a.parent_id);
       const su = box.querySelector('#m-sub'); if (su) su.onclick = () => albumForm(null, a.id);
+      const cv = box.querySelector('#m-cover'); if (cv) cv.onclick = () => coverPicker(a);
       const ar = box.querySelector('#m-arch'); if (ar) ar.onclick = async () => {
         if (!confirm(`Archiver « ${a.titre} » ? Il n'apparaîtra plus dans l'app (les fichiers restent sur le NAS).`)) return;
         const { error } = await sb.from('photo_albums').update({ archive: true }).eq('id', a.id);
@@ -199,6 +201,17 @@ function albumForm(a, parentId) {
       closeSheet(); toast(a ? 'Album mis à jour' : 'Album créé'); await loadAlbums(); route();
     };
   });
+}
+/** Choix de la couverture parmi les photos de l'album (et de ses sous-albums). */
+async function coverPicker(a) {
+  const subs = children(a.id);
+  let items = (await loadItems(a.id)).filter((it) => it.type === 'image');
+  for (const s of subs) items = items.concat((await loadItems(s.id)).filter((it) => it.type === 'image').map((it) => Object.assign({ _sub: s.titre }, it)));
+  if (!items.length) { toast('Aucune photo dans cet album', true); return; }
+  sheet(`<h4>Couverture de « ${esc(a.titre)} »</h4>
+    <div class="hint">Touche une photo pour en faire la couverture${subs.length ? ' (photos des sous-albums comprises)' : ''}.</div>
+    <div class="grid-ph cover-pick">${items.map((it) => `<button class="ph${a.cover_item === it.id ? ' sel' : ''}" data-id="${it.id}" title="${esc(it._sub ? it._sub + ' · ' : '')}${esc(it.fichier)}"><img src="${esc(it.thumb_url || it.web_url || '')}" loading="lazy" alt="" class="ok">${a.cover_item === it.id ? '<span class="cover-badge">⭐</span>' : ''}</button>`).join('')}</div>`,
+    (box) => { box.querySelectorAll('.ph').forEach((b) => { b.onclick = async () => { closeSheet(); await setCover(a.id, b.dataset.id); route(); }; }); });
 }
 async function setCover(albumId, itemId) {
   const { error } = await sb.from('photo_albums').update({ cover_item: itemId }).eq('id', albumId);
