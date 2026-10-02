@@ -99,7 +99,7 @@ a { color: var(--bleu); }
 .err { color: var(--gren); font-size: 12px; margin-top: 10px; font-weight: 700; }
 
 /* Feuille (menu) */
-.sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 40; display: flex; align-items: flex-end; justify-content: center; }
+.sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 55; display: flex; align-items: flex-end; justify-content: center; }
 .sheet { width: 100%; max-width: 560px; background: var(--surface); border-radius: 20px 20px 0 0; padding: 16px 16px calc(18px + env(safe-area-inset-bottom)); box-shadow: 0 -8px 30px rgba(0,0,0,.2); }
 .sheet h4 { margin: 0 0 10px; font-size: 15px; }
 .sheet .opt { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 12px 10px; border: 1.5px solid var(--border); border-radius: 12px; margin-bottom: 8px; font-size: 13px; font-weight: 700; background: var(--surface); cursor: pointer; }

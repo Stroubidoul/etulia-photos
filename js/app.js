@@ -1,11 +1,13 @@
 // Etulia Photos — app principale (v1 : connexion, albums, album, visionneuse, partage)
-export const APP_VERSION = '1';
+export const APP_VERSION = '2';
 const SUPABASE_URL = 'https://qczdkpigbngksztjezbm.supabase.co';
 const SUPABASE_ANON = 'sb_publishable_fGScTPMheymoIscX4GIc_g_uKVZGVzV';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: true, autoRefreshToken: true } });
 const $app = document.getElementById('app');
 const state = { session: null, profile: null, albums: [], items: {}, q: '', sel: null, lb: null };
+const BUCKET = 'etulia-photos';
+const pubUrl = (path) => `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${path.split('/').map(encodeURIComponent).join('/')}`;
 
 // ── utilitaires ──────────────────────────────────────────────────────────────
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -89,7 +91,9 @@ function renderAlbums() {
       <div class="sec"><span>${q ? 'Résultats' : 'Albums'} · ${list.length}</span></div>
       ${list.length ? `<div class="grid-albums">${list.map((a) => albumCard(a)).join('')}</div>`
         : `<div class="empty-state"><div class="big">📭</div>${q ? 'Aucun album ne correspond.' : 'Aucun album pour l\'instant.<br>Lance la synchronisation depuis le Mac pour indexer les dossiers du NAS.'}</div>`}
-    </div>`;
+    </div>
+    ${isDir() ? '<button class="fab" id="fab-album">＋ Album</button>' : ''}`;
+  const fa = document.getElementById('fab-album'); if (fa) fa.onclick = () => albumForm(null, null);
   const qi = document.getElementById('q');
   qi.oninput = () => { state.q = qi.value; const pos = qi.selectionStart; renderAlbums(); const q2 = document.getElementById('q'); q2.focus(); q2.setSelectionRange(pos, pos); };
   $app.querySelectorAll('.album').forEach((b) => { b.onclick = () => go('#/album/' + b.dataset.id); });
@@ -125,7 +129,11 @@ async function renderAlbum(id) {
       : `<div class="empty-state"><div class="big">🖼</div>Aucune photo dans cet album${subs.length ? ' (voir les sous-albums)' : ''}.</div>`}
     ${sel ? `<div class="selbar"><span style="font-weight:800;padding:6px 0">${sel.ids.size} sélectionnée${sel.ids.size > 1 ? 's' : ''}</span>
         <button id="sel-share" ${sel.ids.size ? '' : 'disabled'}>📤 Partager</button>
-        <button id="sel-dl" ${sel.ids.size ? '' : 'disabled'}>⬇ Télécharger</button></div>` : ''}`;
+        <button id="sel-dl" ${sel.ids.size ? '' : 'disabled'}>⬇ Télécharger</button>
+        ${isDir() ? `<button id="sel-del" ${sel.ids.size ? '' : 'disabled'}>🗑 Supprimer</button>` : ''}</div>`
+      : (canAccess() ? '<button class="fab" id="fab-photos">＋ Photos</button>' : '')}`;
+  const fp = document.getElementById('fab-photos'); if (fp) fp.onclick = () => uploadSheet(a);
+  const sd = document.getElementById('sel-del'); if (sd) sd.onclick = () => deleteItems(a, items.filter((it) => state.sel.ids.has(it.id)));
   lazyImages();
   $app.querySelectorAll('.subrow .album').forEach((b) => { b.onclick = () => go('#/album/' + b.dataset.id); });
   $app.querySelectorAll('.ph').forEach((b) => {
@@ -150,8 +158,128 @@ function albumMenu(a) {
   sheet(`<h4>${esc(a.titre)}</h4>
     <div class="hint">${esc(a.slug)} · ${Number(a.nb_total || 0)} photo(s)${a.nb_sub ? ' · ' + a.nb_sub + ' sous-album(s)' : ''}</div>
     <button class="opt" id="m-copy" style="margin-top:12px">🔗 Copier le lien de l'album</button>
-    ${isDir() ? '<div class="hint">Renommer, description, tags, couverture, archiver : à venir (étape 4).</div>' : ''}`,
-    (box) => { box.querySelector('#m-copy').onclick = async () => { try { await navigator.clipboard.writeText(location.origin + location.pathname + '#/album/' + a.id); toast('Lien copié'); } catch (_) { toast('Copie impossible', true); } closeSheet(); }; });
+    ${isDir() ? `<button class="opt" id="m-edit">✎ Renommer · description · tags</button>
+      ${!a.parent_id ? '<button class="opt" id="m-sub">＋ Créer un sous-album</button>' : ''}
+      <button class="opt danger" id="m-arch">📦 Archiver l'album <small>masqué, pas supprimé</small></button>` : ''}`,
+    (box) => {
+      box.querySelector('#m-copy').onclick = async () => { try { await navigator.clipboard.writeText(location.origin + location.pathname + '#/album/' + a.id); toast('Lien copié'); } catch (_) { toast('Copie impossible', true); } closeSheet(); };
+      const ed = box.querySelector('#m-edit'); if (ed) ed.onclick = () => albumForm(a, a.parent_id);
+      const su = box.querySelector('#m-sub'); if (su) su.onclick = () => albumForm(null, a.id);
+      const ar = box.querySelector('#m-arch'); if (ar) ar.onclick = async () => {
+        if (!confirm(`Archiver « ${a.titre} » ? Il n'apparaîtra plus dans l'app (les fichiers restent sur le NAS).`)) return;
+        const { error } = await sb.from('photo_albums').update({ archive: true }).eq('id', a.id);
+        if (error) { toast(error.message, true); return; }
+        closeSheet(); toast('Album archivé'); await loadAlbums(); go(a.parent_id ? '#/album/' + a.parent_id : '#/');
+      };
+    });
+}
+
+// ── administration des albums (direction) ────────────────────────────────────
+const slugify = (s) => String(s || '').trim().replace(/[\/\\:*?"<>|]+/g, '-').replace(/\s+/g, ' ').slice(0, 80);
+function albumForm(a, parentId) {
+  const parent = parentId ? albumById(parentId) : null;
+  sheet(`<h4>${a ? 'Modifier l\'album' : (parent ? 'Nouveau sous-album de « ' + esc(parent.titre) + ' »' : 'Nouvel album')}</h4>
+    <input id="f-titre" placeholder="Titre" value="${esc(a ? a.titre : '')}" maxlength="80">
+    <input id="f-desc" placeholder="Description (facultatif)" value="${esc(a ? a.description || '' : '')}" maxlength="200">
+    <input id="f-tags" placeholder="Tags séparés par des virgules (ex : pergola, alu)" value="${esc(a ? (a.tags || []).join(', ') : '')}">
+    ${a ? '' : '<div class="hint">Le dossier correspondant sera créé sur le NAS au prochain rapatriement des photos déposées depuis l\'app.</div>'}
+    <button class="btn" id="f-ok">${a ? 'Enregistrer' : 'Créer'}</button>`, (box) => {
+    box.querySelector('#f-ok').onclick = async () => {
+      const titre = box.querySelector('#f-titre').value.trim(); if (!titre) { toast('Titre obligatoire', true); return; }
+      const description = box.querySelector('#f-desc').value.trim() || null;
+      const tags = box.querySelector('#f-tags').value.split(',').map((t) => t.trim()).filter(Boolean);
+      let res;
+      if (a) res = await sb.from('photo_albums').update({ titre, description, tags, updated_at: new Date().toISOString() }).eq('id', a.id);
+      else {
+        const slug = (parent ? parent.slug + '/' : '') + slugify(titre);
+        if (state.albums.some((x) => x.slug === slug)) { toast('Un album porte déjà ce nom', true); return; }
+        res = await sb.from('photo_albums').insert({ slug, titre, description, tags, parent_id: parentId || null, ordre: 999, created_by: state.session.user.id });
+      }
+      if (res.error) { toast(res.error.message, true); return; }
+      closeSheet(); toast(a ? 'Album mis à jour' : 'Album créé'); await loadAlbums(); route();
+    };
+  });
+}
+async function setCover(albumId, itemId) {
+  const { error } = await sb.from('photo_albums').update({ cover_item: itemId }).eq('id', albumId);
+  if (error) { toast(error.message, true); return; }
+  toast('Couverture définie'); await loadAlbums();
+}
+async function editCaption(it) {
+  sheet(`<h4>Légende</h4><textarea id="c-txt" rows="3" placeholder="Décris la photo…">${esc(it.legende || '')}</textarea><button class="btn" id="c-ok">Enregistrer</button>`, (box) => {
+    box.querySelector('#c-ok').onclick = async () => {
+      const legende = box.querySelector('#c-txt').value.trim() || null;
+      const { error } = await sb.from('photo_items').update({ legende, updated_at: new Date().toISOString() }).eq('id', it.id);
+      if (error) { toast(error.message, true); return; }
+      it.legende = legende; closeSheet(); toast('Légende enregistrée'); route();
+    };
+  });
+}
+const canDelete = (it) => isDir() || (state.session && it.ajoute_par === state.session.user.id);
+async function deleteItems(a, list) {
+  list = list.filter(canDelete); if (!list.length) return;
+  const nas = list.filter((it) => it.source === 'nas').length;
+  const msg = `Supprimer ${list.length} photo${list.length > 1 ? 's' : ''} de l'album ?` + (nas ? `\n\n⚠ ${nas} vien${nas > 1 ? 'nent' : 't'} du NAS : elle${nas > 1 ? 's' : ''} ser${nas > 1 ? 'ont' : 'a'} retirée${nas > 1 ? 's' : ''} de l'app mais le fichier reste sur le NAS (et reviendra à la prochaine synchro s'il n'est pas supprimé là-bas).` : '');
+  if (!confirm(msg)) return;
+  const paths = list.flatMap((it) => [it.storage_web, it.storage_thumb]).filter(Boolean);
+  if (paths.length) { const { error } = await sb.storage.from(BUCKET).remove(paths); if (error) console.warn('storage remove', error); }
+  const { error } = await sb.from('photo_items').delete().in('id', list.map((it) => it.id));
+  if (error) { toast(error.message, true); return; }
+  toast(`${list.length} photo${list.length > 1 ? 's' : ''} supprimée${list.length > 1 ? 's' : ''}`);
+  state.sel = null; await loadItems(a.id, true); await loadAlbums(); route();
+}
+
+// ── ajout depuis le téléphone ────────────────────────────────────────────────
+async function loadBitmap(file) {
+  try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch (_) {
+    return new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = URL.createObjectURL(file); });
+  }
+}
+function resizeToJpeg(src, max, q) {
+  const w0 = src.width || src.naturalWidth, h0 = src.height || src.naturalHeight;
+  const k = Math.min(1, max / Math.max(w0, h0)); const w = Math.round(w0 * k), h = Math.round(h0 * k);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h; cv.getContext('2d').drawImage(src, 0, 0, w, h);
+  return new Promise((res) => cv.toBlob((b) => res({ blob: b, w, h }), 'image/jpeg', q));
+}
+function uploadSheet(a) {
+  sheet(`<h4>Ajouter des photos à « ${esc(a.titre)} »</h4>
+    <button class="opt" id="u-lib">🖼 Choisir dans la photothèque <small>plusieurs</small></button>
+    <button class="opt" id="u-cam">📷 Prendre une photo</button>
+    <div class="prog" id="u-prog" style="display:none"><span id="u-txt"></span><div class="bar"><i id="u-bar"></i></div></div>
+    <div class="hint">Compressées sur le téléphone (1600 px). Visibles tout de suite par tous ; rapatriées sur le NAS à la prochaine synchro depuis le Mac.</div>
+    <input type="file" id="u-in-lib" accept="image/*" multiple style="display:none"><input type="file" id="u-in-cam" accept="image/*" capture="environment" style="display:none">`, (box) => {
+    const lib = box.querySelector('#u-in-lib'), cam = box.querySelector('#u-in-cam');
+    box.querySelector('#u-lib').onclick = () => lib.click(); box.querySelector('#u-cam').onclick = () => cam.click();
+    lib.onchange = () => uploadFiles(a, [...lib.files], box); cam.onchange = () => uploadFiles(a, [...cam.files], box);
+  });
+}
+async function uploadFiles(a, files, box) {
+  if (!files.length) return;
+  const prog = box.querySelector('#u-prog'), txt = box.querySelector('#u-txt'), bar = box.querySelector('#u-bar');
+  prog.style.display = ''; box.querySelectorAll('.opt').forEach((b) => b.disabled = true);
+  let ok = 0, fail = 0;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    txt.textContent = `Envoi ${i + 1} / ${files.length} — compression…`; bar.style.width = Math.round((i / files.length) * 100) + '%';
+    try {
+      const bmp = await loadBitmap(f);
+      const web = await resizeToJpeg(bmp, 1600, 0.82); const th = await resizeToJpeg(bmp, 400, 0.8);
+      const stamp = new Date(f.lastModified || Date.now()); const pad = (n) => String(n).padStart(2, '0');
+      const base = `app_${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}_${Math.random().toString(36).slice(2, 6)}.jpg`;
+      const pWeb = `${a.id}/${base}`, pTh = `${a.id}/thumb/${base}`;
+      txt.textContent = `Envoi ${i + 1} / ${files.length} — téléversement…`;
+      let r = await sb.storage.from(BUCKET).upload(pWeb, web.blob, { contentType: 'image/jpeg', upsert: false }); if (r.error) throw r.error;
+      r = await sb.storage.from(BUCKET).upload(pTh, th.blob, { contentType: 'image/jpeg', upsert: false }); if (r.error) throw r.error;
+      const row = { album_id: a.id, fichier: base, type: 'image', source: 'app', web_url: pubUrl(pWeb), thumb_url: pubUrl(pTh), storage_web: pWeb, storage_thumb: pTh,
+        largeur: web.w, hauteur: web.h, taille: web.blob.size, pris_le: stamp.toISOString(), ajoute_par: state.session.user.id, synced_nas: false };
+      const ins = await sb.from('photo_items').insert(row); if (ins.error) throw ins.error;
+      ok++;
+    } catch (e) { console.warn('upload', f.name, e); fail++; }
+  }
+  bar.style.width = '100%'; txt.textContent = `${ok} photo${ok > 1 ? 's' : ''} ajoutée${ok > 1 ? 's' : ''}${fail ? ` · ${fail} échec${fail > 1 ? 's' : ''}` : ''}`;
+  setTimeout(closeSheet, 900);
+  await loadItems(a.id, true); await loadAlbums(); route();
 }
 
 // ── partage / téléchargement ─────────────────────────────────────────────────
@@ -206,7 +334,14 @@ async function renderLightbox(albumId, itemId) {
     lb.querySelector('#lb-share').onclick = () => shareItems([it]);
     lb.querySelector('#lb-orig').onclick = () => window.open(it.orig_url || it.web_url, '_blank', 'noopener');
     lb.querySelector('#lb-copy').onclick = async () => { try { await navigator.clipboard.writeText(it.orig_url || it.web_url); toast('Lien copié'); } catch (_) { toast('Copie impossible', true); } };
-    lb.querySelector('#lb-more').onclick = () => sheet(`<h4>${esc(it.fichier)}</h4><div class="hint">${it.largeur && it.hauteur ? it.largeur + ' × ' + it.hauteur + ' px · ' : ''}${it.taille ? Math.round(it.taille / 1024) + ' Ko · ' : ''}source ${it.source === 'app' ? 'téléphone' : 'NAS'}${it.pris_le ? ' · prise le ' + fmtDate(it.pris_le) : ''}</div>${isDir() ? '<div class="hint">Légende, couverture, suppression : à venir (étape 4).</div>' : ''}`);
+    lb.querySelector('#lb-more').onclick = () => sheet(`<h4>${esc(it.fichier)}</h4><div class="hint">${it.largeur && it.hauteur ? it.largeur + ' × ' + it.hauteur + ' px · ' : ''}${it.taille ? Math.round(it.taille / 1024) + ' Ko · ' : ''}source ${it.source === 'app' ? 'téléphone' : 'NAS'}${it.pris_le ? ' · prise le ' + fmtDate(it.pris_le) : ''}</div>
+      ${canDelete(it) ? '<button class="opt" id="i-cap" style="margin-top:12px">✎ Légende</button>' : ''}
+      ${isDir() ? '<button class="opt" id="i-cov">⭐ Définir comme couverture de l\'album</button>' : ''}
+      ${canDelete(it) ? '<button class="opt danger" id="i-del">🗑 Supprimer</button>' : ''}`, (box) => {
+        const c = box.querySelector('#i-cap'); if (c) c.onclick = () => editCaption(it);
+        const v = box.querySelector('#i-cov'); if (v) v.onclick = async () => { closeSheet(); await setCover(albumId, it.id); };
+        const d = box.querySelector('#i-del'); if (d) d.onclick = async () => { closeSheet(); const before = items.length; await deleteItems(a, [it]); if (items.length !== before) return; };
+      });
     const img = lb.querySelector('img'); if (img) img.ondblclick = () => img.classList.toggle('zoom');
     // balayage tactile
     const st = lb.querySelector('.stage'); let x0 = null, y0 = null;
