@@ -1,5 +1,5 @@
 // Etulia Photos — app principale (v1 : connexion, albums, album, visionneuse, partage)
-export const APP_VERSION = '2';
+export const APP_VERSION = '3';
 const SUPABASE_URL = 'https://qczdkpigbngksztjezbm.supabase.co';
 const SUPABASE_ANON = 'sb_publishable_fGScTPMheymoIscX4GIc_g_uKVZGVzV';
 
@@ -381,8 +381,24 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 
+// ── connexion unique depuis le portail (v3) ──────────────────────────────────
+// Le portail faron.etulia.fr ouvre l'app avec #sso=<jeton à usage unique>
+// (Edge Function sso-handoff). On l'échange contre une session propre à
+// cette app, puis on efface le jeton de l'adresse.
+async function ssoConsume() {
+  const m = location.hash.match(/[#&]sso=([^&]+)/);
+  if (!m) return false;
+  history.replaceState(null, '', location.pathname + location.search + '#/');
+  try {
+    const { data, error } = await sb.auth.verifyOtp({ token_hash: decodeURIComponent(m[1]), type: 'magiclink' });
+    if (error) { console.warn('[sso]', error.message); toast('Connexion automatique impossible — connecte-toi.', true); return false; }
+    return !!(data && data.session);
+  } catch (e) { console.warn('[sso]', e); return false; }
+}
+
 // ── démarrage ────────────────────────────────────────────────────────────────
 (async () => {
+  await ssoConsume();
   const { data } = await sb.auth.getSession();
   state.session = data.session;
   if (state.session) await loadProfile();
